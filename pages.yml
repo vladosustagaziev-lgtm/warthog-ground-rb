@@ -1,6 +1,6 @@
 name: Deploy Warthog Mobile App
 
-on:
+on:https://github.com/vladosustagaziev-lgtm/warthog-ground-rb/tree/github/workflows/pages.yml
   push:
     branches: [main]
     paths:
