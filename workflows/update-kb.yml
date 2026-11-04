@@ -1,0 +1,78 @@
+name: Update War Thunder Knowledge Base
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'data/sources.json'
+      - 'tests/**'
+      - '.github/workflows/update-kb.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: warthog-kb-refresh
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate crawler
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Crawl official War Thunder Wiki
+        env:
+          WT_MAX_PAGES: '2000'
+          WT_DELAY_SECONDS: '0.5'
+          WT_MAX_DOCUMENT_CHARS: '14000'
+          WT_CHUNK_SIZE: '3500'
+          WT_CHUNK_OVERLAP: '350'
+        run: python scripts/scrape_wt.py
+
+      - name: Validate generated knowledge base
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          with open('site/manifest.json', encoding='utf-8') as f: m=json.load(f)
+          with open('site/kb.json', encoding='utf-8') as f: kb=json.load(f)
+          assert m['schema_version'] == 4
+          assert m['pages'] == len({c['source'] for c in kb['chunks']})
+          assert m['chunks'] == len(kb['chunks'])
+          assert m['pages'] > 0, 'Crawler produced no pages'
+          assert m['failed_pages'] < m['pages'], 'Too many crawl failures; refusing to publish'
+          assert m['crawler_version'] == '0.5'
+          size = Path('site/kb.json').stat().st_size
+          assert size < 50 * 1024 * 1024, f'Knowledge snapshot is too large: {size} bytes'
+          print({**m, 'kb_bytes': size})
+          PY
+
+      - name: Commit knowledge changes
+        run: |
+          git config user.name 'warthog-kb-bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add site/kb.json site/manifest.json
+          if git diff --cached --quiet; then
+            echo 'No knowledge changes detected.'
+          else
+            git commit -m 'Refresh official War Thunder knowledge base'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
